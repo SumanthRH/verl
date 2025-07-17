@@ -46,7 +46,7 @@ install_requires = [
 TEST_REQUIRES = ["pytest", "pre-commit", "py-spy", "pytest-asyncio"]
 PRIME_REQUIRES = ["pyext"]
 GEO_REQUIRES = ["mathruler", "torchvision", "qwen_vl_utils"]
-GPU_REQUIRES = ["liger-kernel", "flash-attn"]
+GPU_REQUIRES = ["liger-kernel", "flash-attn@https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"]
 MATH_REQUIRES = ["math-verify"]  # Add math-verify as an optional dependency
 VLLM_REQUIRES = ["tensordict>=0.8.0,<=0.9.1,!=0.9.0", "vllm>=0.7.3,<=0.8.5"]
 SGLANG_REQUIRES = [
