@@ -30,7 +30,7 @@ from verl.trainer.ppo.reward import load_reward_manager
 from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_type
 
-config_dir = str(Path(__file__) / "config")
+config_dir = str(Path(__file__).parent / "config")
 
 @hydra.main(config_path=config_dir, config_name="ppo_trainer", version_base=None)
 def main(config):
