@@ -26,8 +26,7 @@ from verl.workers.rollout.async_server import AsyncServerBase
 logger = logging.getLogger(__file__)
 
 
-@ray.remote(num_cpus=1)
-class AsyncSGLangServer(AsyncServerBase):
+class AsyncSGLangServerRegular(AsyncServerBase):
     def __init__(self, config: DictConfig, dp_size: int, dp_rank: int, wg_prefix: str):
         super().__init__()
         self.config = config.actor_rollout_ref
@@ -93,3 +92,5 @@ class AsyncSGLangServer(AsyncServerBase):
         tasks = [worker.sleep.remote() for worker in self.workers]
         if tasks:
             await asyncio.gather(*tasks)
+
+AsyncSGLangServer = ray.remote(num_cpus=1)(AsyncSGLangServerRegular)

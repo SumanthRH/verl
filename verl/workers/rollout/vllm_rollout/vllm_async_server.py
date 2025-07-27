@@ -173,8 +173,7 @@ class ExternalZeroMQDistributedExecutor(Executor):
         return
 
 
-@ray.remote(num_cpus=1)
-class AsyncvLLMServer(AsyncServerBase):
+class AsyncvLLMServerRegular(AsyncServerBase):
     """
     AsyncvLLMServer is a wrapper for AsyncLLM, it uses ExternalRayDistributedExecutor to launch engines
     in hybrid rollout workers, i.e AsyncActorRolloutRefWorker.
@@ -336,3 +335,5 @@ class AsyncvLLMServer(AsyncServerBase):
         await self.engine.reset_prefix_cache()
         if self.config.rollout.free_cache_engine:
             await self.engine.sleep()
+
+AsyncvLLMServer = ray.remote(num_cpus=1)(AsyncvLLMServerRegular)
