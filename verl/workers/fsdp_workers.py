@@ -1684,6 +1684,11 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     async def generate(self, prompt_ids: list[int], sampling_params: dict[str, Any], request_id: str) -> list[int]:
         ret = await self.rollout.generate(prompt_ids, sampling_params, request_id)
         return ret
+    
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD, blocking=False)
+    async def completion(self, prompt_ids: list[int], sampling_params: dict[str, Any], request_id: str) -> list[int]:
+        ret = await self.rollout.completion(prompt_ids, sampling_params, request_id)
+        return ret
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     async def wake_up(self):

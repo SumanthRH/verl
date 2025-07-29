@@ -1387,6 +1387,16 @@ class SGLangRollout(BaseRollout):
         request_sampling_params.update(sampling_params)
         output = await self._handle_engine_generate(prompt_ids, request_sampling_params)
         return output["output_ids"]
+    
+    async def completion(
+        self, prompt_ids: torch.Tensor, sampling_params: dict[str, Any], request_id: str
+    ):
+        request_sampling_params = self.sampling_params.copy()
+        request_sampling_params.update(sampling_params)
+        output = await self._handle_engine_generate(prompt_ids, request_sampling_params)
+        if isinstance(output, list):
+            output = output[0]
+        return output["output_ids"], output["meta_info"]["finish_reason"]["type"]
 
     async def wake_up(self):
         if not self.is_sleep:
