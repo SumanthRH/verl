@@ -101,6 +101,7 @@ class DataParallelPPOActor(BasePPOActor):
             input_ids = micro_batch["input_ids"]
             batch_size, seqlen = input_ids.shape
             attention_mask = micro_batch["attention_mask"]
+            attention_mask_4d = micro_batch.get("attention_mask_4d", None)
             position_ids = micro_batch["position_ids"]
             entropy = None
             if position_ids.dim() == 3:  # qwen2vl mrope
@@ -244,7 +245,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                 output = self.actor_module(
                     input_ids=input_ids,
-                    attention_mask=attention_mask,
+                    attention_mask=attention_mask_4d if attention_mask_4d else attention_mask,
                     position_ids=position_ids,
                     **multi_modal_inputs,
                     use_cache=False,
@@ -316,6 +317,9 @@ class DataParallelPPOActor(BasePPOActor):
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
+        if "attention_mask_4d" in data.batch.keys():
+            select_keys.append("attention_mask_4d")
+
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
         if use_dynamic_bsz:
@@ -370,6 +374,9 @@ class DataParallelPPOActor(BasePPOActor):
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
+        if "attention_mask_4d" in data.batch.keys():
+            select_keys.append("attention_mask_4d")
+        
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
         # Split to make minibatch iterator for updating the actor
