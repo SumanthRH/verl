@@ -19,6 +19,7 @@ Single Process Actor
 
 import logging
 import os
+from typing import Callable
 
 import torch
 from torch import nn
@@ -35,9 +36,13 @@ from verl.utils.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_b
 from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor import BasePPOActor
+from transformers.masking_utils import and_masks
 
 if is_cuda_available:
     from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+    from torch.nn.attention.flex_attention import create_block_mask, BlockMask
+    import torch
+    torch._inductor.config.unroll_reductions_threshold = 65
 elif is_npu_available:
     from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
 
@@ -47,6 +52,74 @@ __all__ = ["DataParallelPPOActor"]
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+
+def get_padding_mask(attention_mask):
+    attention_mask = attention_mask.bool()
+    def padding_mask(b, h, q_idx, k_idx):
+        return attention_mask[b, k_idx]
+    return padding_mask
+
+def causal_mask(b, h, q_idx, k_idx):
+    return (q_idx >= k_idx)
+
+def get_mask_mod(kind: "B, S", step: "B, S") -> Callable:
+
+    def my_mask_mod(b, h, q_idx, k_idx) -> bool:
+        nonlocal kind, step
+
+        ki = kind[b, q_idx]
+        kj = kind[b, k_idx]
+
+        si = step[b, q_idx]
+        sj = step[b, k_idx]
+
+        # print(f"Types: ki={type(ki)}, kj={type(kj)}, si={type(si)}, sj={type(sj)}")
+
+        mask = (((ki ==  kj)  & (si == sj)) | ((ki == 1) & (kj == 0)) | ((ki == 1) & (sj == si - 1) & ((kj == 2) | (kj == 3))) | ((ki == 2) & (kj == 0)) | ((ki == 2) & (sj == si - 1) & ((kj == 2) | (kj == 3))) | ((ki == 2) & (sj == si) & (kj == 1)) | ((ki == 3) & (kj == 3) & (si == sj)))
+        # # t tokens at step j may attend to q and (r,i) tokens at step j-1
+        # mask =   # attend to q
+        # mask |=   # attend to r,i at previous step
+
+        # # r tokens at step j may attend to q, (r,i) tokens at step j-1, and t tokens at the same step
+        # mask |=   # attend to q
+        # mask |=   # attend to r,i at previous step
+        # mask |=   # attend to t at same step
+
+        # # i tokens (external info) attend to themselves
+        # mask |= 
+
+        return mask
+    return my_mask_mod
+
+
+def get_mask_mod_custom(kind: "B, S", step: "B, S") -> Callable:
+
+    def my_mask_mod(b, h, q_idx, k_idx) -> bool:
+        nonlocal kind, step
+
+        ki = kind[b, q_idx]
+        kj = kind[b, k_idx]
+
+        si = step[b, q_idx]
+        sj = step[b, k_idx]
+
+        # print(f"Types: ki={type(ki)}, kj={type(kj)}, si={type(si)}, sj={type(sj)}")
+
+        mask = (((ki ==  kj)  & (si == sj)) | ((ki == 1) & (kj == 0)) | ((ki == 1) & ((kj == 2) | (kj == 3))) | ((ki == 2) & (kj == 0)) | ((ki == 2) & ((kj == 2) | (kj == 3))) | ((ki == 2) & (sj == si) & (kj == 1)) | ((ki == 3) & (kj == 3) & (si == sj)))
+        # # t tokens at step j may attend to q and (r,i) tokens at step j-1
+        # mask =   # attend to q
+        # mask |=   # attend to r,i at previous step
+
+        # # r tokens at step j may attend to q, (r,i) tokens at step j-1, and t tokens at the same step
+        # mask |=   # attend to q
+        # mask |=   # attend to r,i at previous step
+        # mask |=   # attend to t at same step
+
+        # # i tokens (external info) attend to themselves
+        # mask |= 
+
+        return mask
+    return my_mask_mod
 
 class DataParallelPPOActor(BasePPOActor):
     def __init__(self, config, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None):
@@ -102,6 +175,10 @@ class DataParallelPPOActor(BasePPOActor):
             batch_size, seqlen = input_ids.shape
             attention_mask = micro_batch["attention_mask"]
             attention_mask_4d = micro_batch.get("attention_mask_4d", None)
+            if attention_mask_4d is not None:
+                print(f"Shape of attention mask 4d: {attention_mask_4d.shape} ; Shape of input Ids; {input_ids.shape}")
+            kinds = micro_batch.get("kinds", None)
+            steps = micro_batch.get("steps", None)
             position_ids = micro_batch["position_ids"]
             entropy = None
             if position_ids.dim() == 3:  # qwen2vl mrope
@@ -243,14 +320,30 @@ class DataParallelPPOActor(BasePPOActor):
                     extra_args["temperature"] = temperature
                     extra_args["return_dict"] = True
 
-                output = self.actor_module(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask_4d if attention_mask_4d else attention_mask,
-                    position_ids=position_ids,
-                    **multi_modal_inputs,
-                    use_cache=False,
-                    **extra_args,
-                )  # prevent model thinks we are generating
+                # breakpoint()
+                if kinds is not None:
+                    assert attention_mask_4d is None
+                    my_mask_fn = get_mask_mod(kinds, steps)
+                    padding_mask_fn = get_padding_mask(attention_mask)
+                    final_mask_fn = and_masks(causal_mask, my_mask_fn, padding_mask_fn)
+
+                    attention_mask = create_block_mask(final_mask_fn, B=input_ids.size(0), H=None, Q_LEN=input_ids.size(1), KV_LEN=input_ids.size(1))
+
+                if kinds is not None or attention_mask_4d is not None:
+                    position_ids = None # juts don't use this for now
+
+                try: 
+                    output = self.actor_module(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask_4d.float() if attention_mask_4d is not None else attention_mask,
+                        position_ids=position_ids,
+                        **multi_modal_inputs,
+                        use_cache=False,
+                        **extra_args,
+                    )  # prevent model thinks we are generating
+                except Exception as e:
+                    print(f"Got an exception during forward pass {str(e)}")
+                    breakpoint()
 
                 if self.use_fused_kernels:
                     log_probs = output.log_probs[:, -response_length - 1 : -1]
@@ -262,6 +355,8 @@ class DataParallelPPOActor(BasePPOActor):
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                    # breakpoint()
+                    print("average log probs:", log_probs.detach().mean().item())
                     if calculate_entropy:
                         if not self.config.entropy_checkpointing:
                             entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
@@ -317,8 +412,13 @@ class DataParallelPPOActor(BasePPOActor):
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
-        if "attention_mask_4d" in data.batch.keys():
-            select_keys.append("attention_mask_4d")
+        other_keys = ["attention_mask_4d", "kinds", "steps"]
+        for key in other_keys:
+            if key in data.batch.keys():
+                select_keys.append(key)
+                print(f"{key} being used in `compute_log_prob`")
+            else:
+                print(f"{key} not in `compute_log_prob`")
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
@@ -374,8 +474,13 @@ class DataParallelPPOActor(BasePPOActor):
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
-        if "attention_mask_4d" in data.batch.keys():
-            select_keys.append("attention_mask_4d")
+        other_keys = ["attention_mask_4d", "kinds", "steps"]
+        for key in other_keys:
+            if key in data.batch.keys():
+                select_keys.append(key)
+                print(f"{key} being used in `update_policy`")
+            else:
+                print(f"{key} not in `update_policy`")
         
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 

@@ -210,9 +210,10 @@ class FSDPEngine(BaseEngine):
 
         from transformers import AutoConfig
 
+        attn_impl = getattr(config, "attn_implementation", "flash_attention_2") 
         model_config = AutoConfig.from_pretrained(
             local_path,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             trust_remote_code=config.model.get("trust_remote_code", False),
         )
         model_config.num_labels = 1

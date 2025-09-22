@@ -249,9 +249,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         else:
             torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
+        attn_impl = getattr(self.config, "attn_implementation", "flash_attention_2") 
+        print(f"Using attention impl for ActorRolloutRefWorker: {attn_impl}")
         # override model kwargs
         actor_model_config = AutoConfig.from_pretrained(
-            local_path, trust_remote_code=trust_remote_code, attn_implementation="flash_attention_2"
+            local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_impl
         )
 
         # patch for kimi-vl
@@ -1012,9 +1014,11 @@ class CriticWorker(Worker, DistProfilerExtension):
 
         from transformers import AutoConfig
 
+        attn_impl = getattr(config, "attn_implementation", "flash_attention_2") 
+        print(f"Using attention impl for CRITIC: {attn_impl}")
         critic_model_config = AutoConfig.from_pretrained(
             local_path,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             trust_remote_code=config.model.get("trust_remote_code", False),
         )
         critic_model_config.num_labels = 1
@@ -1368,6 +1372,8 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         init_context = get_init_weight_context_manager(
             use_meta_tensor=not model_config.tie_word_embeddings, mesh=self.device_mesh
         )
+        attn_impl = getattr(config, "attn_implementation", "flash_attention_2") 
+        print(f"Using attention impl for REWARD MODEL: {attn_impl}")
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -1376,7 +1382,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                 pretrained_model_name_or_path=local_path,
                 config=model_config,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
+                attn_implementation=attn_impl,
                 trust_remote_code=trust_remote_code,
             )
 
